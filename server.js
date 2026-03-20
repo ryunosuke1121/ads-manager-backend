@@ -326,3 +326,28 @@ app.listen(PORT, () => {
   console.log(`✓ Supabase URL: ${supabaseUrl}`);
   console.log(`✓ Slack webhook: ${SLACK_WEBHOOK ? 'configured' : 'not configured'}`);
 });
+
+// ================== Google Ads 同期 ==================
+
+app.get('/api/sync/status', (req, res) => {
+  res.json({
+    configured: isConfigured(),
+    message: isConfigured()
+      ? 'Google Ads API が設定されています'
+      : 'Google Ads 環境変数が未設定です（GOOGLE_ADS_* を Railway に設定してください）',
+  });
+});
+
+app.post('/api/sync/google-ads', async (req, res) => {
+  if (!isConfigured()) {
+    return res.status(503).json({ error: 'Google Ads API が未設定です' });
+  }
+  try {
+    const { period } = req.query;
+    const result = period === 'full' ? await fullSync() : await dailySync();
+    res.json({ message: '同期完了', ...result, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Google Ads sync error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
