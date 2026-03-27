@@ -1,10 +1,3 @@
-import express from 'express';
-import cors from 'cors';
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
 const express = require('express');
 const axios = require('axios');
 require('dotenv').config();
@@ -24,39 +17,54 @@ app.use((req, res, next) => {
 });
 
 const { GoogleAdsApi } = require('google-ads-api');
+
 let client = null;
 
 const initializeClient = () => {
-  if (process.env.ACCESS_TOKEN && process.env.REFRESH_TOKEN) {
+  if (process.env.GOOGLE_ADS_CLIENT_ID) {
     client = new GoogleAdsApi({
-      developer_token: process.env.DEVELOPER_TOKEN,
-      client_id: process.env.CLIENT_ID,
-      client_secret: process.env.CLIENT_SECRET,
-      redirect_uri: process.env.REDIRECT_URI,
-      access_token: process.env.ACCESS_TOKEN,
-      refresh_token: process.env.REFRESH_TOKEN
+      developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
+      client_id: process.env.GOOGLE_ADS_CLIENT_ID,
+      client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET,
     });
   }
 };
 
 initializeClient();
 
+app.get('/auth/start', (req, res) => {
+  const redirectUri = process.env.REDIRECT_URI || 'https://ads-manager-backend-production.up.railway.app/auth/callback';
+  const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' +
+    'client_id=' + encodeURIComponent(process.env.GOOGLE_ADS_CLIENT_ID) +
+    '&redirect_uri=' + encodeURIComponent(redirectUri) +
+    '&response_type=code' +
+    '&scope=' + encodeURIComponent('https://www.googleapis.com/auth/adwords') +
+    '&access_type=offline&prompt=consent';
+  res.redirect(authUrl);
+});
+
 app.get('/auth/authorize', (req, res) => {
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(process.env.CLIENT_ID)}&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_type=code&scope=${encodeURIComponent('https://www.googleapis.com/auth/adwords')}&access_type=offline&prompt=consent`;
+  const redirectUri = process.env.REDIRECT_URI || 'https://ads-manager-backend-production.up.railway.app/auth/callback';
+  const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' +
+    'client_id=' + encodeURIComponent(process.env.GOOGLE_ADS_CLIENT_ID) +
+    '&redirect_uri=' + encodeURIComponent(redirectUri) +
+    '&response_type=code' +
+    '&scope=' + encodeURIComponent('https://www.googleapis.com/auth/adwords') +
+    '&access_type=offline&prompt=consent';
   res.json({ authUrl });
 });
 
 app.get('/auth/callback', async (req, res) => {
   try {
     const code = req.query.code;
+    const redirectUri = process.env.REDIRECT_URI || 'https://ads-manager-backend-production.up.railway.app/auth/callback';
     const response = await axios.post('https://oauth2.googleapis.com/token', {
-      client_id: process.env.CLIENT_ID,
-      client_secret: process.env.CLIENT_SECRET,
+      client_id: process.env.GOOGLE_ADS_CLIENT_ID,
+      client_secret: process.env.GOOGLE_ADS_CLIENT_SECRET,
       code,
       grant_type: 'authorization_code',
-      redirect_uri: process.env.REDIRECT_URI
+      redirect_uri: redirectUri
     });
-
     const { access_token, refresh_token } = response.data;
     res.json({ accessToken: access_token, refreshToken: refresh_token });
   } catch (error) {
@@ -65,26 +73,26 @@ app.get('/auth/callback', async (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'ok',
-    hasAccessToken: !!process.env.ACCESS_TOKEN,
-    hasRefreshToken: !!process.env.REFRESH_TOKEN,
+    hasRefreshToken: !!process.env.GOOGLE_ADS_REFRESH_TOKEN,
     clientInitialized: !!client
   });
 });
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    if (!client) {
-      return res.status(400).json({ error: 'OAuth tokens not configured. Please set ACCESS_TOKEN and REFRESH_TOKEN.' });
+    if (!process.env.GOOGLE_ADS_REFRESH_TOKEN) {
+      return res.status(400).json({ error: 'OAuth tokens not configured.' });
     }
-
-    const customerId = process.env.CUSTOMER_ID;
-    const report = await client.Campaign.search({
-      customer_id: customerId,
-      query: `SELECT metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS`
+    const customer = client.Customer({
+      customer_id: process.env.GOOGLE_ADS_CUSTOMER_ID,
+      refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
     });
-
+    const report = await customer.query(
+      'SELECT metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions ' +
+      'FROM campaign WHERE segments.date DURING LAST_30_DAYS'
+    );
     let impressions = 0, clicks = 0, cost = 0, conversions = 0;
     report.forEach(row => {
       impressions += row.metrics?.impressions || 0;
@@ -92,7 +100,6 @@ app.get('/api/dashboard', async (req, res) => {
       cost += row.metrics?.cost_micros || 0;
       conversions += row.metrics?.conversions || 0;
     });
-
     res.json({
       summary: {
         impressions,
@@ -112,16 +119,18 @@ app.get('/api/dashboard', async (req, res) => {
 
 app.get('/api/campaigns', async (req, res) => {
   try {
-    if (!client) {
+    if (!process.env.GOOGLE_ADS_REFRESH_TOKEN) {
       return res.status(400).json({ error: 'OAuth tokens not configured' });
     }
-
-    const customerId = process.env.CUSTOMER_ID;
-    const report = await client.Campaign.search({
-      customer_id: customerId,
-      query: `SELECT campaign.id, campaign.name, campaign.status, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS`
+    const customer = client.Customer({
+      customer_id: process.env.GOOGLE_ADS_CUSTOMER_ID,
+      refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
     });
-
+    const report = await customer.query(
+      'SELECT campaign.id, campaign.name, campaign.status, ' +
+      'metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions ' +
+      'FROM campaign WHERE segments.date DURING LAST_30_DAYS'
+    );
     const campaigns = report.map(row => ({
       id: row.campaign?.id,
       name: row.campaign?.name,
@@ -131,7 +140,6 @@ app.get('/api/campaigns', async (req, res) => {
       spend: row.metrics?.cost_micros || 0,
       conversions: Math.round(row.metrics?.conversions || 0)
     }));
-
     res.json({ campaigns });
   } catch (error) {
     console.error('Error:', error);
@@ -141,16 +149,19 @@ app.get('/api/campaigns', async (req, res) => {
 
 app.get('/api/keywords', async (req, res) => {
   try {
-    if (!client) {
+    if (!process.env.GOOGLE_ADS_REFRESH_TOKEN) {
       return res.status(400).json({ error: 'OAuth tokens not configured' });
     }
-
-    const customerId = process.env.CUSTOMER_ID;
-    const report = await client.AdGroupCriterion.search({
-      customer_id: customerId,
-      query: `SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, metrics.impressions, metrics.clicks FROM ad_group_criterion WHERE ad_group_criterion.type = KEYWORD AND segments.date DURING LAST_30_DAYS`
+    const customer = client.Customer({
+      customer_id: process.env.GOOGLE_ADS_CUSTOMER_ID,
+      refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
     });
-
+    const report = await customer.query(
+      'SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ' +
+      'ad_group_criterion.quality_info.quality_score, metrics.impressions, metrics.clicks ' +
+      'FROM ad_group_criterion ' +
+      'WHERE ad_group_criterion.type = KEYWORD AND segments.date DURING LAST_30_DAYS'
+    );
     const keywords = report.map(row => ({
       text: row.ad_group_criterion?.keyword?.text || 'Unknown',
       matchType: row.ad_group_criterion?.keyword?.match_type || 'EXACT',
@@ -158,7 +169,6 @@ app.get('/api/keywords', async (req, res) => {
       impressions: row.metrics?.impressions || 0,
       clicks: row.metrics?.clicks || 0
     }));
-
     res.json({ keywords });
   } catch (error) {
     console.error('Error:', error);
@@ -168,6 +178,6 @@ app.get('/api/keywords', async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Access token configured: ${!!process.env.ACCESS_TOKEN}`);
+  console.log('Server running on port ' + PORT);
+  console.log('Refresh token configured: ' + !!process.env.GOOGLE_ADS_REFRESH_TOKEN);
 });
